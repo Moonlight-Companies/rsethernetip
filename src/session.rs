@@ -95,6 +95,12 @@ impl Session {
         self.conn.send(Command::UNREGISTER_SESSION, &[], handle)
     }
 
+    // Implementation detail: remote address of the underlying TCP connection.
+    /// Returns the remote socket address of the session's TCP connection.
+    pub fn peer_addr(&self) -> Option<std::net::SocketAddr> {
+        self.conn.peer_addr()
+    }
+
     /// Closes the underlying TCP connection.
     pub fn close(&self) -> Result<()> {
         self.conn.close()

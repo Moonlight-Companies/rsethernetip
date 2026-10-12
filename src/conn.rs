@@ -314,6 +314,13 @@ impl TcpConn {
         Ok((header, data))
     }
 
+    // Implementation detail: remote socket address (Go `conn.RemoteAddr()`), used by the I/O
+    // scanner to derive the UDP target.
+    /// Returns the remote address of the TCP connection, if known.
+    pub fn peer_addr(&self) -> Option<std::net::SocketAddr> {
+        self.stream.peer_addr().ok()
+    }
+
     // Implementation detail: shutting down both directions also unblocks a reader in another thread.
     /// Closes the underlying TCP connection.
     pub fn close(&self) -> Result<()> {
