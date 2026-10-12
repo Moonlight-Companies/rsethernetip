@@ -479,8 +479,9 @@ mod tests {
         // runs first (tests run in parallel and the registry is global).
         ensure_timer_registered();
         assert_eq!(DataType(0x1001).to_string(), "TIMER");
-        // Array variant.
-        assert_eq!(DataType(0x1001 | 0x8000).to_string(), "TIMER[]");
+        // Array variant. Go used 0x9001 (bit 15 as array flag); cip::DataType now treats bit 15
+        // as the structure flag and bits 13-14 as array dimensions, so use 1 dimension (0x2000).
+        assert_eq!(DataType(0x1001 | 0x2000).to_string(), "TIMER[]");
     }
 
     #[test]
