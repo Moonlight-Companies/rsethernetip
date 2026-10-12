@@ -291,6 +291,14 @@ pub trait DataPoint: fmt::Debug + Send + Sync {
     fn as_typed(&self) -> Option<&dyn TypedDataPoint> {
         None
     }
+
+    // Implementation detail (not spec): Rust stand-in for Go's concrete-type assertion
+    // (`dp.(Tag)`, `dp.(*pccc.DataPoint)`). Concrete data point types return `Some(self)` so a
+    // protocol client can recover its own type with `downcast_ref`.
+    /// Returns `self` as `&dyn Any` so protocol clients can downcast to their own data point type.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 // Implementation detail (not spec): optional type metadata on a data point.
