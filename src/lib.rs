@@ -1,5 +1,6 @@
 //! rsethernetip: zero-dependency EtherNet/IP + CIP library (port of goindustrial's ethernetip).
 pub mod logging;
+pub mod testutil;
 pub mod plc;
 pub mod eip;
 pub mod cip;
