@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
@@ -27,9 +27,8 @@ const MAX_PACKET_SIZE: usize = 4096;
 // interrupt a blocking accept from another thread).
 const ACCEPT_POLL: Duration = Duration::from_millis(5);
 
-// Ref: CIP Vol. 2, Section 2-3 "Encapsulation Message" / SendRRData and SendUnitData: the
-// command-specific data begins with Interface Handle (UDINT) + Timeout (UINT) = 6 bytes
-// (section number unverified).
+// Ref: CIP Vol. 2, Encapsulation Protocol, SendRRData and SendUnitData command-specific data:
+// Interface Handle (UDINT) + Timeout (UINT) = 6 bytes (section unverified).
 const SEND_DATA_PREFIX: usize = 6;
 
 // Implementation detail (not spec): description of an active client connection as seen by the
@@ -109,6 +108,8 @@ struct Inner {
     // Session management: atomic counter ensures unique handles across connections.
     next_session: AtomicU32,
     next_conn_id: AtomicU64,
+    // Implementation detail: accepted-but-not-finished connections (reserved at accept time).
+    active: AtomicUsize,
     clients: Mutex<HashMap<u64, ConnState>>,
     on_connect: Option<ClientCallback>,
     on_disconnect: Option<ClientCallback>,
@@ -202,6 +203,7 @@ impl ServerBuilder {
                 done: AtomicBool::new(false),
                 next_session: AtomicU32::new(0),
                 next_conn_id: AtomicU64::new(0),
+                active: AtomicUsize::new(0),
                 clients: Mutex::new(HashMap::new()),
                 on_connect: self.on_connect,
                 on_disconnect: self.on_disconnect,
@@ -354,10 +356,12 @@ impl Server {
             let _ = conn.set_nonblocking(false);
             let _ = conn.set_nodelay(true);
 
-            // Enforce max-client limit.
+            // Enforce max-client limit (implementation detail, not spec). The slot is reserved
+            // here, before spawning, via `active`, so back-to-back accepts cannot bypass it.
+            let reserved = inner.active.fetch_add(1, Ordering::SeqCst) + 1;
             if inner.max_clients > 0 {
-                let count = lock(&inner.clients).len();
-                if count >= inner.max_clients {
+                if reserved > inner.max_clients {
+                    inner.active.fetch_sub(1, Ordering::SeqCst);
                     inner.logger.warn(format_args!(
                         "max clients ({}) reached, rejecting {}",
                         inner.max_clients, peer
@@ -368,7 +372,10 @@ impl Server {
             }
 
             let srv = self.clone();
-            let h = thread::spawn(move || srv.handle_conn(conn));
+            let h = thread::spawn(move || {
+                srv.handle_conn(conn);
+                srv.inner.active.fetch_sub(1, Ordering::SeqCst);
+            });
             let mut threads = lock(&inner.threads);
             // Reap finished handler threads so the list stays bounded.
             let mut i = 0;
@@ -435,7 +442,7 @@ impl Server {
                 return;
             }
 
-            // Read header: Ref: CIP Vol. 2, Section 2-3 Encapsulation Message (24 bytes).
+            // Read header: Ref: CIP Vol. 2, Encapsulation Protocol, header format (24 bytes) (section unverified).
             if conn.read_exact(&mut header_buf).is_err() {
                 return;
             }
@@ -461,10 +468,22 @@ impl Server {
             let mut resp_data: Vec<u8> = Vec::new();
             let mut status: u32 = eip::STATUS_SUCCESS;
 
-            // Ref: CIP Vol. 2, Section 2-4 "Encapsulation Commands" (section unverified).
+            // Ref: CIP Vol. 2, Encapsulation Protocol, encapsulation commands (section unverified).
             match command {
                 // Ref: CIP Vol. 2, RegisterSession (0x0065): reply carries Protocol Version
                 // (UINT) and Options Flags (UINT); the target assigns the Session Handle.
+                // Ref: CIP Vol. 2, Encapsulation Protocol, RegisterSession request: Protocol
+                // Version (UINT) + Options Flags (UINT) = 4 bytes; an unsupported version is
+                // answered with status 0x0069, a wrong length with 0x0065 (section unverified).
+                // A repeated RegisterSession on a connection is given a fresh handle, as in Go
+                // (a Go test covers it).
+                Command::REGISTER_SESSION if data.len() != 4 => {
+                    status = eip::STATUS_INVALID_LENGTH;
+                }
+                Command::REGISTER_SESSION if u16::from_le_bytes([data[0], data[1]]) != 1 => {
+                    status = eip::STATUS_UNSUPPORTED_PROTOCOL;
+                    resp_data = vec![1, 0, 0, 0]; // supported version offered in the reply
+                }
                 Command::REGISTER_SESSION => {
                     let mut h = inner.next_session.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
                     if h == 0 {
@@ -525,13 +544,13 @@ impl Server {
                     }
                 }
 
-                // Unsupported command: Ref: CIP Vol. 2, Table 2-3.x encapsulation status
-                // 0x0001 "invalid or unsupported command" (table number unverified).
+                // Unsupported command: Ref: CIP Vol. 2, Encapsulation Protocol, encapsulation status
+                // codes: 0x0001 invalid or unsupported command (section unverified).
                 _ => status = eip::STATUS_INVALID_COMMAND,
             }
 
             // Send response: header echoes command and sender context.
-            // Ref: CIP Vol. 2, Section 2-3 (reply header).
+            // Ref: CIP Vol. 2, Encapsulation Protocol, header format (section unverified).
             let resp_header = eip::EncapsulationHeader {
                 command,
                 length: resp_data.len() as u16,

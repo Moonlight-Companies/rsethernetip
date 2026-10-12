@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::cip::{self, MessageRouterRequest, Path};
 use crate::conn::{Error, Result};
-use crate::eip::{ITEM_ID_CONNECTED_ADDRESS, ITEM_ID_CONNECTED_DATA};
+use crate::eip::{ITEM_ID_CONNECTED_DATA, ITEM_ID_SEQUENCED_ADDRESS};
 use crate::logging::{Logger, NopLogger};
 use crate::objects::connmgr::{
     self, ForwardCloseRequest, ForwardOpenRequest, CONN_PARAM_FIXED_SIZE, CONN_PARAM_POINT_TO_POINT,
@@ -210,6 +210,9 @@ impl IoScanner {
     pub fn open(&self, ctx: &Context, cfg: &IoConnectionConfig) -> Result<Arc<IoConn>> {
         let s = &self.shared;
         let ot_conn_id = s.next_ot_id.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+        // Originator-proposed T->O connection ID, unique per open (high bit set so it never
+        // collides with the O->T proposal sequence).
+        let to_proposal = ot_conn_id | 0x8000_0000;
         // Go converts the 32-bit counter to cip.UINT (truncating).
         let serial = s.next_serial.fetch_add(1, Ordering::SeqCst).wrapping_add(1) as u16;
 
@@ -243,8 +246,12 @@ impl IoScanner {
         let fo_req = ForwardOpenRequest {
             priority_time_tick: 0x0A,
             timeout_ticks: 0xF0,
+            // Ref: CIP Vol. 1, Connection Manager, Forward_Open connection ID selection (section
+            // unverified): the target selects the O->T connection ID (the reply value is
+            // authoritative) while the originator proposes the T->O connection ID. Both are
+            // proposed here and the reply values are used afterwards.
             ot_connection_id: ot_conn_id,
-            to_connection_id: 0, // server assigns
+            to_connection_id: to_proposal,
             connection_serial_number: serial,
             vendor_id: s.vendor_id,
             originator_serial_number: s.originator_sn,
@@ -253,8 +260,9 @@ impl IoScanner {
             ot_network_connection_params: ot_params,
             to_rpi: rpi_micros,
             to_network_connection_params: to_params,
-            // Ref: CIP Vol. 1, Transport Class/Trigger: 0x01 = class 1, cyclic, server trigger
-            // (section unverified).
+            // Ref: CIP Vol. 1, Connection Manager, Transport Class and Trigger (section
+            // unverified): 0x01 = Direction=client (bit 7=0), Production trigger=cyclic
+            // (bits 6-4=0), Transport class 1 (bits 3-0).
             transport_type_trigger: 0x01,
             connection_path: conn_path,
             ..Default::default()
@@ -287,7 +295,13 @@ impl IoScanner {
         if rd.len() < 26 {
             return Err(Error::msg(format!("Forward_Open response too short: {} bytes", rd.len())));
         }
-        let to_conn_id = u32::from_le_bytes([rd[4], rd[5], rd[6], rd[7]]);
+        // Ref: CIP Vol. 1, Forward_Open reply (section unverified): O->T connection ID at
+        // bytes 0..4 (selected by the target), T->O connection ID at bytes 4..8.
+        let ot_conn_id = u32::from_le_bytes([rd[0], rd[1], rd[2], rd[3]]);
+        let mut to_conn_id = u32::from_le_bytes([rd[4], rd[5], rd[6], rd[7]]);
+        if to_conn_id == 0 {
+            to_conn_id = to_proposal;
+        }
         let ot_api_us = u32::from_le_bytes([rd[16], rd[17], rd[18], rd[19]]);
         let mut ot_api = Duration::from_micros(ot_api_us as u64);
         if ot_api.is_zero() {
@@ -325,7 +339,20 @@ impl IoScanner {
         // Implementation detail: producer thread (Go goroutine), joined by `shutdown`.
         let (sh, c2) = (s.clone(), conn.clone());
         let h = std::thread::spawn(move || c2.produce_loop(&sh));
-        lock(&self.threads).push(h);
+        {
+            // Implementation detail: reap finished producer threads so repeated open/close
+            // cycles do not accumulate unjoined handles.
+            let mut threads = lock(&self.threads);
+            let mut i = 0;
+            while i < threads.len() {
+                if threads[i].is_finished() {
+                    let _ = threads.swap_remove(i).join();
+                } else {
+                    i += 1;
+                }
+            }
+            threads.push(h);
+        }
 
         Ok(conn)
     }
@@ -415,6 +442,36 @@ impl Drop for IoScanner {
     }
 }
 
+// Implementation detail: walks the CPF items by type and length (no fixed offsets) and returns
+// the connection ID from the Sequenced Address item plus the Connected Data item payload.
+// Ref: CIP Vol. 2, Common Packet Format item layout: Type ID (UINT), Length (UINT), data (section
+// unverified).
+fn parse_io_packet(data: &[u8]) -> Option<(u32, &[u8])> {
+    let count = u16::from_le_bytes([*data.first()?, *data.get(1)?]);
+    if count != 2 {
+        return None;
+    }
+    let mut off = 2usize;
+    let mut conn_id: Option<u32> = None;
+    let mut payload: Option<&[u8]> = None;
+    for _ in 0..count {
+        let hdr = data.get(off..off.checked_add(4)?)?;
+        let ty = u16::from_le_bytes([hdr[0], hdr[1]]);
+        let len = u16::from_le_bytes([hdr[2], hdr[3]]) as usize;
+        let body = data.get(off + 4..(off + 4).checked_add(len)?)?;
+        off += 4 + len;
+        if ty == ITEM_ID_SEQUENCED_ADDRESS {
+            if len != 8 {
+                return None;
+            }
+            conn_id = Some(u32::from_le_bytes([body[0], body[1], body[2], body[3]]));
+        } else if ty == ITEM_ID_CONNECTED_DATA {
+            payload = Some(body);
+        }
+    }
+    Some((conn_id?, payload?))
+}
+
 impl Shared {
     // Implementation detail: Go `receiveLoop`. Reads UDP packets and dispatches them to the
     // matching IoConn. The socket has a short read timeout so the `done` flag is observed.
@@ -427,34 +484,23 @@ impl Shared {
             match self.udp.recv_from(&mut buf) {
                 Ok((n, _)) => self.handle_incoming_packet(&buf[..n]),
                 Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted) => {}
+                // Implementation detail: on some platforms (e.g. Windows WSAECONNRESET) an ICMP
+                // port-unreachable from an earlier send_to surfaces as a recv error; it is
+                // transient and must not kill the receive thread.
+                Err(e) if matches!(e.kind(), io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionRefused) => {}
                 Err(_) => return,
             }
         }
     }
 
-    // Ref: CIP Vol. 2, Section 2-6 Common Packet Format, as used by class 1 I/O: sequenced
-    // address / connected address item (0x00A1, connection ID) + connected data item (0x00B1,
-    // 16-bit sequence count + optional 32-bit run/idle header + assembly data) (section for I/O
-    // framing unverified).
+    // Ref: CIP Vol. 2, Common Packet Format (section unverified), as used by class 1 I/O over
+    // UDP: Sequenced Address item (0x8002, length 8: 32-bit connection ID + 32-bit sequence
+    // number) + Connected Data item (0x00B1: 16-bit sequence count + optional 32-bit run/idle
+    // header + assembly data) (section for I/O framing unverified).
     // Parses a T-O packet and stores its assembly data into the matching connection.
     fn handle_incoming_packet(&self, data: &[u8]) {
-        // Minimum: 2 (count) + 4 (item1 hdr) + 4 (connID) + 4 (item2 hdr) + 2 (seq) = 16
-        if data.len() < 16 {
-            return;
-        }
-
-        let item_count = u16::from_le_bytes([data[0], data[1]]);
-        if item_count != 2 {
-            return;
-        }
-
-        // Item 1: Connected Address: type at 2:4, length at 4:6, data at 6:10
-        let conn_id = u32::from_le_bytes([data[6], data[7], data[8], data[9]]);
-
-        // Item 2: Connected Data: type at 10:12, length at 12:14, data starts at 14
-        let data_len = u16::from_le_bytes([data[12], data[13]]) as usize;
-        let payload = match data.get(14..14 + data_len) {
-            Some(p) => p,
+        let (conn_id, payload) = match parse_io_packet(data) {
+            Some(x) => x,
             None => return,
         };
 
@@ -577,9 +623,10 @@ impl IoConn {
         }
     }
 
-    // Ref: CIP Vol. 2, Section 2-6 Common Packet Format with Connected Address item (0x00A1,
-    // 4 bytes: O->T connection ID) and Connected Data item (0x00B1: 16-bit sequence count,
-    // optional 32-bit run/idle header, assembly data) (I/O framing section unverified).
+    // Ref: CIP Vol. 2, Common Packet Format (section unverified) with Sequenced Address item
+    // (0x8002, 8 bytes: O->T connection ID + 32-bit sequence number) and Connected Data item
+    // (0x00B1: 16-bit sequence count, optional 32-bit run/idle header, assembly data) (I/O
+    // framing section unverified).
     // Builds the CPF packet manually (same format as runtime/scheduler.go) and sends it.
     fn send_packet(&self, udp: &UdpSocket) {
         let snapshot = self.output();
@@ -591,13 +638,14 @@ impl IoConn {
             data_len += 4;
         }
 
-        let mut pkt = Vec::with_capacity(14 + data_len);
+        let mut pkt = Vec::with_capacity(18 + data_len);
         // Item count = 2
         pkt.extend_from_slice(&2u16.to_le_bytes());
-        // Item 1: Connected Address (0x00A1), length 4
-        pkt.extend_from_slice(&ITEM_ID_CONNECTED_ADDRESS.to_le_bytes());
-        pkt.extend_from_slice(&4u16.to_le_bytes());
+        // Item 1: Sequenced Address (0x8002), length 8
+        pkt.extend_from_slice(&ITEM_ID_SEQUENCED_ADDRESS.to_le_bytes());
+        pkt.extend_from_slice(&8u16.to_le_bytes());
         pkt.extend_from_slice(&self.ot_connection_id.to_le_bytes());
+        pkt.extend_from_slice(&(seq as u32).to_le_bytes());
         // Item 2: Connected Data (0x00B1), length = data_len (Go truncates to uint16)
         pkt.extend_from_slice(&ITEM_ID_CONNECTED_DATA.to_le_bytes());
         pkt.extend_from_slice(&(data_len as u16).to_le_bytes());
@@ -785,12 +833,7 @@ mod tests {
                     while !stop.load(Ordering::SeqCst) {
                         let Ok((n, _)) = sock.recv_from(&mut buf) else { continue };
                         let d = &buf[..n];
-                        if d.len() < 16 || u16::from_le_bytes([d[0], d[1]]) != 2 {
-                            continue;
-                        }
-                        let id = u32::from_le_bytes([d[6], d[7], d[8], d[9]]);
-                        let len = u16::from_le_bytes([d[12], d[13]]) as usize;
-                        let Some(p) = d.get(14..14 + len) else { continue };
+                        let Some((id, p)) = parse_io_packet(d) else { continue };
                         if p.len() < 2 || !lock(&conns).iter().any(|c| c.0 == id) {
                             continue;
                         }
@@ -811,9 +854,10 @@ mod tests {
                         seq = seq.wrapping_add(1);
                         let mut pkt = Vec::new();
                         pkt.extend_from_slice(&2u16.to_le_bytes());
-                        pkt.extend_from_slice(&ITEM_ID_CONNECTED_ADDRESS.to_le_bytes());
-                        pkt.extend_from_slice(&4u16.to_le_bytes());
+                        pkt.extend_from_slice(&ITEM_ID_SEQUENCED_ADDRESS.to_le_bytes());
+                        pkt.extend_from_slice(&8u16.to_le_bytes());
                         pkt.extend_from_slice(&to_id.to_le_bytes());
+                        pkt.extend_from_slice(&(seq as u32).to_le_bytes());
                         pkt.extend_from_slice(&ITEM_ID_CONNECTED_DATA.to_le_bytes());
                         pkt.extend_from_slice(&((2 + data.len()) as u16).to_le_bytes());
                         pkt.extend_from_slice(&seq.to_le_bytes());
@@ -1014,9 +1058,10 @@ mod tests {
         let pkt = |id: u32, body: &[u8]| {
             let mut p = Vec::new();
             p.extend_from_slice(&2u16.to_le_bytes());
-            p.extend_from_slice(&ITEM_ID_CONNECTED_ADDRESS.to_le_bytes());
-            p.extend_from_slice(&4u16.to_le_bytes());
+            p.extend_from_slice(&ITEM_ID_SEQUENCED_ADDRESS.to_le_bytes());
+            p.extend_from_slice(&8u16.to_le_bytes());
             p.extend_from_slice(&id.to_le_bytes());
+            p.extend_from_slice(&0u32.to_le_bytes());
             p.extend_from_slice(&ITEM_ID_CONNECTED_DATA.to_le_bytes());
             p.extend_from_slice(&(body.len() as u16).to_le_bytes());
             p.extend_from_slice(body);
