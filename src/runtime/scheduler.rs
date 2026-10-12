@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use super::Runtime;
-use crate::eip::{ITEM_ID_CONNECTED_ADDRESS, ITEM_ID_CONNECTED_TRANSPORT};
+use crate::eip::{ITEM_ID_CONNECTED_TRANSPORT, ITEM_ID_SEQUENCED_ADDRESS};
 
 // Implementation detail (not spec): copy of the IOConnection fields needed to send a packet
 // outside the connection lock.
@@ -120,9 +120,11 @@ impl Scheduler {
         }
     }
 
-    // Ref: CIP Vol. 2, Section 2-6 Common Packet Format - Connected Address Item (0x00A1) +
-    // Connected Data Item (0x00B1); data = 16-bit sequence count, optional 32-bit Run/Idle
-    // header (1 = run), then assembly data (CIP Vol. 1 Transport Class 1, section unverified).
+    // Ref: CIP Vol. 2 (EtherNet/IP Adaptation of CIP), Common Packet Format - Sequenced Address
+    // Item (0x8002, 8 bytes: 32-bit connection ID + 32-bit encapsulation sequence number) +
+    // Connected Data Item (0x00B1); data = 16-bit Class 1 sequence count, optional 32-bit
+    // Run/Idle header (1 = run), then assembly data (section unverified). This deviates from
+    // the Go original, which used the Connected Address Item (0x00A1).
     fn send_packet(&self, snap: &ConnSnapshot) {
         let addr = match snap.remote_addr {
             Some(a) => a,
@@ -130,9 +132,10 @@ impl Scheduler {
         };
         let mut buf: Vec<u8> = Vec::with_capacity(16 + snap.assembly_data.len());
         buf.extend_from_slice(&2u16.to_le_bytes()); // item count
-        buf.extend_from_slice(&ITEM_ID_CONNECTED_ADDRESS.to_le_bytes());
-        buf.extend_from_slice(&4u16.to_le_bytes());
+        buf.extend_from_slice(&ITEM_ID_SEQUENCED_ADDRESS.to_le_bytes());
+        buf.extend_from_slice(&8u16.to_le_bytes());
         buf.extend_from_slice(&snap.connection_id.to_le_bytes());
+        buf.extend_from_slice(&u32::from(snap.sequence_count).to_le_bytes());
         buf.extend_from_slice(&ITEM_ID_CONNECTED_TRANSPORT.to_le_bytes());
         let mut data_len = 2 + snap.assembly_data.len();
         if snap.run_idle_header {

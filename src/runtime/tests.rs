@@ -167,13 +167,13 @@ fn scheduler_produces_tick() {
     sched.start();
     let mut buf = [0u8; 2048];
     let (n, _) = recv.recv_from(&mut buf).expect("recv");
-    assert!(n >= 14, "packet too short: {n} bytes");
+    assert!(n >= 18, "packet too short: {n} bytes");
     let d = &buf[..n];
     assert_eq!(u16::from_le_bytes([d[0], d[1]]), 2);
     assert_eq!(u32::from_le_bytes([d[6], d[7], d[8], d[9]]), 0xCC);
-    assert!(u16::from_le_bytes([d[12], d[13]]) >= 6);
-    assert_ne!(u16::from_le_bytes([d[14], d[15]]), 0, "sequence count should not be 0");
-    assert_eq!(&d[16..20], &[1, 2, 3, 4]);
+    assert!(u16::from_le_bytes([d[16], d[17]]) >= 6);
+    assert_ne!(u16::from_le_bytes([d[18], d[19]]), 0, "sequence count should not be 0");
+    assert_eq!(&d[20..24], &[1, 2, 3, 4]);
     sched.stop();
     sched.stop();
     rt.stop();

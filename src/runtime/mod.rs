@@ -22,7 +22,7 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::eip::{ITEM_ID_CONNECTED_ADDRESS, ITEM_ID_CONNECTED_TRANSPORT};
+use crate::eip::{ITEM_ID_CONNECTED_ADDRESS, ITEM_ID_SEQUENCED_ADDRESS};
 use crate::objects::assembly::{AssemblyInstance, AssemblyObject};
 
 // Implementation detail (not spec): replaces Go's `chan struct{}` that is closed to signal
@@ -257,8 +257,14 @@ impl Runtime {
             if !c.is_consumer {
                 continue;
             }
-            let mult = 4u64 << (c.timeout_mult as u32 & 63);
-            let timeout = c.rpi.checked_mul(mult as u32).unwrap_or(Duration::MAX);
+            // Go: `uint64(4) << TimeoutMult` (shift >= 64 gives 0), then RPI * mult.
+            // Go's Duration multiply wraps; here overflow saturates to "never expires".
+            let mult = 4u64.checked_shl(c.timeout_mult as u32).unwrap_or(0);
+            let nanos = c.rpi.as_nanos().saturating_mul(u128::from(mult));
+            let timeout = u64::try_from(nanos / 1_000_000_000)
+                .ok()
+                .map(|secs| Duration::new(secs, (nanos % 1_000_000_000) as u32))
+                .unwrap_or(Duration::MAX);
             let last = c.last_receive.unwrap_or(now);
             if now.saturating_duration_since(last) > timeout {
                 expired.push(*id);
@@ -284,16 +290,26 @@ impl Runtime {
                         e.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
                     ) => {}
-                // Go returns on any other read error.
-                Err(_) => return,
+                // Windows reports ICMP port-unreachable from a prior send_to as these; not fatal.
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionRefused
+                    ) => {}
+                // Go returns on any other read error (implementation detail, not spec).
+                Err(e) => {
+                    eprintln!("rsethernetip runtime: listener stopped: {e}");
+                    return;
+                }
             }
         }
     }
 
-    // Ref: CIP Vol. 2, Section 2-6 Common Packet Format; implicit I/O packet = 2 items:
-    // Connected Address Item (0x00A1, 4 bytes connection ID) + Connected Data Item (0x00B1)
+    // Ref: CIP Vol. 2 Common Packet Format; implicit I/O packet = 2 items: Sequenced Address
+    // Item (0x8002, 8 bytes: connection ID + sequence number) + Connected Data Item (0x00B1)
     // starting with a 16-bit sequence count (CIP Vol. 1 Transport Class 1, section unverified),
-    // optionally followed by a 32-bit Run/Idle header.
+    // optionally followed by a 32-bit Run/Idle header. The Go-compatible Connected Address
+    // Item (0x00A1, 4 bytes) is still accepted as a lenient fallback.
     fn handle_packet(&self, data: &[u8], _remote: SocketAddr) {
         if data.len() < 14 {
             return;
@@ -303,21 +319,24 @@ impl Runtime {
         if item_count != 2 {
             return;
         }
-        // Go does not validate the item type ids; kept as-is.
-        let _ = (ITEM_ID_CONNECTED_ADDRESS, ITEM_ID_CONNECTED_TRANSPORT);
-        let len1 = u16_at(4).unwrap_or(0);
-        if len1 != 4 {
+        let len1 = u16_at(4).unwrap_or(0) as usize;
+        let id1 = u16_at(2).unwrap_or(0);
+        let ok = (id1 == ITEM_ID_SEQUENCED_ADDRESS && len1 == 8)
+            || (id1 == ITEM_ID_CONNECTED_ADDRESS && len1 == 4);
+        if !ok {
             return;
         }
         let conn_id = match data.get(6..10) {
             Some(b) => u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
             None => return,
         };
-        let len2 = match u16_at(12) {
+        let hdr2 = 6 + len1;
+        let len2 = match u16_at(hdr2 + 2) {
             Some(l) => l as usize,
             None => return,
         };
-        let payload = match data.get(14..14 + len2) {
+        let start = hdr2 + 4;
+        let payload = match data.get(start..start + len2) {
             Some(p) => p,
             None => return,
         };
