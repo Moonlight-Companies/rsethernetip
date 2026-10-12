@@ -620,8 +620,8 @@ mod tests {
         c.write_address(&ctx(), "N7:0", 42i16).unwrap();
         let req = &exec.sent()[0];
         assert_eq!(req[4], FNC_W);
-        assert_eq!(&req[5..9], &[7, FileType::INTEGER.0, 0, 0]);
-        assert_eq!(&req[9..11], &[0x2A, 0x00]);
+        assert_eq!(&req[5..10], &[2, 7, FileType::INTEGER.0, 0, 0]);
+        assert_eq!(&req[10..12], &[0x2A, 0x00]);
     }
 
     #[test]
@@ -630,7 +630,7 @@ mod tests {
         let c = Client::new(exec.clone());
         c.write_address(&ctx(), "F8:5", 2.5f32).unwrap();
         let req = &exec.sent()[0];
-        assert_eq!(req[9..13], 2.5f32.to_bits().to_le_bytes());
+        assert_eq!(req[10..14], 2.5f32.to_bits().to_le_bytes());
     }
 
     #[test]
@@ -654,7 +654,7 @@ mod tests {
         c.write_address(&ctx(), "B3:0/2", true).unwrap();
         let sent = exec.sent();
         assert_eq!(sent.len(), 2);
-        assert_eq!(&sent[1][9..11], &[0x05, 0x00]);
+        assert_eq!(&sent[1][10..12], &[0x05, 0x00]);
     }
 
     #[test]
@@ -666,7 +666,7 @@ mod tests {
         });
         let c = Client::new(exec.clone());
         c.write_address(&ctx(), "N7:5/3", false).unwrap();
-        assert_eq!(&exec.sent()[1][9..11], &[0xF7, 0xFF]);
+        assert_eq!(&exec.sent()[1][10..12], &[0xF7, 0xFF]);
     }
 
     #[test]
@@ -694,7 +694,7 @@ mod tests {
         let exec = Arc::new(FakeExecutor::default());
         let c = Client::new(exec.clone());
         c.write(&ctx(), &File::new("N7:0"), &[0x09, 0x00]).unwrap();
-        assert_eq!(&exec.sent()[0][9..11], &[0x09, 0x00]);
+        assert_eq!(&exec.sent()[0][10..12], &[0x09, 0x00]);
     }
 
     #[derive(Debug)]

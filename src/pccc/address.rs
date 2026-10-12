@@ -111,8 +111,8 @@ pub fn parse_address(s: &str) -> Result<Address> {
         let Ok(n) = file_num_str.parse::<i64>() else {
             return e(format!("pccc: invalid file number {file_num_str:?} in {s:?}"));
         };
-        if !(0..=255).contains(&n) {
-            return e(format!("pccc: file number {n} out of range [0,255] in {s:?}"));
+        if !(0..=254).contains(&n) {
+            return e(format!("pccc: file number {n} out of range [0,254] in {s:?}"));
         }
         if let Some(def) = implicit_file_number(ft)
             && n != def
@@ -135,8 +135,8 @@ pub fn parse_address(s: &str) -> Result<Address> {
     let Ok(elem) = right.parse::<i64>() else {
         return e(format!("pccc: invalid element {right:?} in {s:?}"));
     };
-    if !(0..=255).contains(&elem) {
-        return e(format!("pccc: element {elem} out of range [0,255] in {s:?}"));
+    if !(0..=254).contains(&elem) {
+        return e(format!("pccc: element {elem} out of range [0,254] in {s:?}"));
     }
 
     let mut addr =
