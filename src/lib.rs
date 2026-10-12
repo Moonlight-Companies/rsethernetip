@@ -11,6 +11,7 @@ pub mod runtime;
 pub mod options;
 pub mod session;
 pub mod conn;
+pub mod transport;
 pub mod connector;
 pub mod datapoint;
 pub mod pccc_glue;
