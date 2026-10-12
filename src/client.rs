@@ -273,9 +273,14 @@ impl Client {
             let mut all_symbols = Vec::new();
 
             for id in 1..=(max_instance as u32) {
+                if let Some(e) = ctx.err() {
+                    return Err(Error::Plc(e));
+                }
                 let req = cip::new_get_symbol_attributes_request(id);
                 let resp = match sess.send_cip_request(ctx, &req) {
                     Ok(r) => r,
+                    // Deviation from Go: transport failures abort so do_op resets the session.
+                    Err(e) if !matches!(e, Error::CipLayer(_) | Error::Cip(_)) => return Err(e),
                     Err(e) => {
                         self.logger.warn(format_args!("Failed to fetch attributes for instance {}: {}", id, e));
                         continue;

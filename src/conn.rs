@@ -210,7 +210,10 @@ pub fn format_dump(data: &[u8], dir: Direction) -> String {
 // (section unverified).
 const DEFAULT_PORT: &str = ":44818";
 
-// Ref: CIP Vol. 2, Section 2-3 "Encapsulation Message" (header + command-specific data over TCP).
+// Implementation detail (not spec): default socket read/write timeout.
+const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+// Ref: CIP Vol. 2 (EtherNet/IP Adaptation of CIP), Encapsulation protocol: 24-byte encapsulation header (section unverified).
 // Implementation detail: TCP socket with serialized writes. Safe for concurrent use.
 /// Carries EtherNet/IP encapsulation packets over one TCP connection.
 pub struct TcpConn {
@@ -260,10 +263,14 @@ impl TcpConn {
                 dial(&addr, cfg.dial_timeout)?
             }
         };
+        // Implementation detail (not spec): bound blocking socket I/O so a silent peer cannot hang
+        // callers forever (Go sets no deadline; deviation for robustness).
+        let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+        let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
         Ok(TcpConn { stream, hex: cfg.hex_dumper, wmu: Mutex::new(()) })
     }
 
-    // Ref: CIP Vol. 2, Section 2-3 "Encapsulation Message": 24-byte header followed by data;
+    // Ref: CIP Vol. 2 (EtherNet/IP Adaptation of CIP), Encapsulation protocol: 24-byte header followed by data (section unverified);
     // sender context and options are zero for requests.
     /// Writes a complete encapsulation packet (24-byte header + data).
     pub fn send(&self, cmd: Command, data: &[u8], session_handle: SessionHandle) -> Result<()> {
@@ -295,8 +302,8 @@ impl TcpConn {
         Ok(())
     }
 
-    // Ref: CIP Vol. 2, Section 2-3 "Encapsulation Message": Length field gives the size of the
-    // command-specific data following the header (16-bit, so allocation is bounded to 64 KiB).
+    // Ref: CIP Vol. 2 (EtherNet/IP Adaptation of CIP), Encapsulation protocol: Length field gives the size of the
+    // command-specific data following the header (16-bit, so allocation is bounded to 64 KiB) (section unverified).
     /// Reads a complete encapsulation packet and returns the header and data payload.
     pub fn receive(&self) -> Result<(EncapsulationHeader, Vec<u8>)> {
         let mut hb = [0u8; eip::HEADER_SIZE];
@@ -333,7 +340,9 @@ impl TcpConn {
 fn dial(addr: &str, timeout: std::time::Duration) -> Result<TcpStream> {
     let mut last: Option<io::Error> = None;
     for sa in addr.to_socket_addrs()? {
-        match TcpStream::connect_timeout(&sa, timeout) {
+        // Go's net.DialTimeout treats 0 as "no timeout"; connect_timeout rejects a zero duration.
+        let r = if timeout.is_zero() { TcpStream::connect(sa) } else { TcpStream::connect_timeout(&sa, timeout) };
+        match r {
             Ok(s) => return Ok(s),
             Err(e) => last = Some(e),
         }
