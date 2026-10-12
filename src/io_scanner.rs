@@ -211,8 +211,10 @@ impl IoScanner {
         let s = &self.shared;
         let ot_conn_id = s.next_ot_id.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
         // Originator-proposed T->O connection ID, unique per open (high bit set so it never
-        // collides with the O->T proposal sequence).
-        let to_proposal = ot_conn_id | 0x8000_0000;
+        // collides with the O->T proposal sequence). Bit 30 rather than bit 31 is used so it also
+        // cannot collide with IDs the target allocates (this crate's ConnectionManager counts up
+        // from 0x8000_0000), which would make both directions share one connection-table slot.
+        let to_proposal = ot_conn_id | 0x4000_0000;
         // Go converts the 32-bit counter to cip.UINT (truncating).
         let serial = s.next_serial.fetch_add(1, Ordering::SeqCst).wrapping_add(1) as u16;
 
