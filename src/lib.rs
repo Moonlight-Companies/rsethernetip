@@ -18,3 +18,4 @@ pub mod pccc_glue;
 pub mod client;
 pub mod server;
 pub mod io_scanner;
+pub mod cli;
