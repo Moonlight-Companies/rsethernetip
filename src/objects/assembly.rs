@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::cip::{
     CipError, Error, Object, Path, Result, STATUS_ATTRIBUTE_NOT_SUPPORTED,
-    STATUS_INVALID_ATTRIBUTE_VALUE, STATUS_OBJECT_DOES_NOT_EXIST, STATUS_PATH_SEGMENT_ERROR,
-    STATUS_SERVICE_NOT_SUPPORTED, SERVICE_GET_ATTRIBUTE_SINGLE, SERVICE_SET_ATTRIBUTE_SINGLE,
+    STATUS_NOT_ENOUGH_DATA, STATUS_OBJECT_DOES_NOT_EXIST, STATUS_PATH_SEGMENT_ERROR,
+    STATUS_SERVICE_NOT_SUPPORTED, STATUS_TOO_MUCH_DATA, SERVICE_GET_ATTRIBUTE_SINGLE, SERVICE_SET_ATTRIBUTE_SINGLE,
     USINT,
 };
 
@@ -124,9 +124,13 @@ impl AssemblyObject {
 
         if attr_id == ATTR_DATA {
             let mut buf = instance.data.lock().unwrap_or_else(|e| e.into_inner());
-            if data.len() != buf.len() {
-                // Assembly size is fixed; strict size match enforced (as in Go).
-                return Err(status(STATUS_INVALID_ATTRIBUTE_VALUE));
+            // Ref: CIP Vol. 1, general status codes 0x13 Not enough data / 0x15 Too much data
+            // (Go returned 0x09 for any mismatch; changed to the size-specific codes).
+            if data.len() < buf.len() {
+                return Err(status(STATUS_NOT_ENOUGH_DATA));
+            }
+            if data.len() > buf.len() {
+                return Err(status(STATUS_TOO_MUCH_DATA));
             }
             buf.copy_from_slice(data);
             return Ok(());
@@ -252,7 +256,9 @@ mod tests {
         let ao = AssemblyObject::new();
         ao.register_assembly(10, vec![0; 4]);
         let err = ao.set_attribute_single(10, 3, &[1, 2]).unwrap_err();
-        assert_eq!(st(err), STATUS_INVALID_ATTRIBUTE_VALUE);
+        assert_eq!(st(err), STATUS_NOT_ENOUGH_DATA);
+        let err = ao.set_attribute_single(10, 3, &[1, 2, 3, 4, 5]).unwrap_err();
+        assert_eq!(st(err), STATUS_TOO_MUCH_DATA);
     }
 
     #[test]

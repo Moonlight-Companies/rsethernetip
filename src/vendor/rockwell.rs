@@ -67,7 +67,7 @@ impl Marshaler for Timer {
     }
 }
 
-// Ref: Rockwell 1756-PM020 Logix 5000 Data Access - TIMER memory layout (12- or 14-byte).
+// Ref: Rockwell 1756-PM020 Logix 5000 Data Access - TIMER memory layout (14-byte form per Go source / empirical; not verified against 1756-PM020).
 impl Unmarshaler for Timer {
     fn unmarshal_cip(&mut self, data: &[u8]) -> Result<()> {
         self.timer.unmarshal_cip(data)
@@ -242,7 +242,10 @@ pub fn register_pid(dt: DataType) {
 // ---------- CONTROL ----------
 
 // Ref: Rockwell 1756-RM003 - CONTROL structure used by FAL, FSC, COP etc.; layout per
-// 1756-PM020 Logix 5000 Data Access (bit positions per Go source).
+// 1756-PM020 Logix 5000 Data Access (bit positions per Go source; EN 31 .. FD 24 match
+// 1756-RM003). The byte layout below is taken from the Go source / empirical observation and
+// is NOT verified against 1756-PM020; a Logix CONTROL tag is 12 bytes of data (three DINTs)
+// and the leading 2 bytes are probably the structure type handle in a read response.
 // 14-byte wire layout, same size as Timer and Counter:
 //   Offset 0-1:   Reserved (INT)
 //   Offset 2-5:   Status bits (DINT) - EN, EU, DN, EM, ER, UL, IN, FD
@@ -299,7 +302,7 @@ pub const CONTROL_STATUS_IN: u32 = 25;
 // Ref: Rockwell 1756-RM003 CONTROL structure - FD (Found), bit 24.
 pub const CONTROL_STATUS_FD: u32 = 24;
 
-// Ref: Rockwell 1756-PM020 Logix 5000 Data Access - CONTROL 14-byte layout (see Control docs).
+// CONTROL layout per Go source / empirical, not verified against 1756-PM020.
 // Decodes the 14-byte layout; fewer than 14 bytes yields StatusNotEnoughData.
 impl Unmarshaler for Control {
     fn unmarshal_cip(&mut self, data: &[u8]) -> Result<()> {
@@ -324,7 +327,7 @@ impl Unmarshaler for Control {
     }
 }
 
-// Ref: Rockwell 1756-PM020 Logix 5000 Data Access - encodes the 14-byte CONTROL layout
+// CONTROL layout per Go source / empirical, not verified against 1756-PM020 - encodes the 14-byte layout
 // (reserved INT = 0, status DINT, LEN DINT, POS DINT).
 impl Marshaler for Control {
     fn marshal_cip(&self) -> Result<Vec<u8>> {

@@ -39,9 +39,10 @@ pub const SERVICE_GET_CONNECTION_DATA: USINT = 0x56;
 // Ref: ODVA CIP Vol. 1, Connection Manager Object services - Search_Connection_Data 0x57
 // (section unverified; Go names it SearchConnection).
 pub const SERVICE_SEARCH_CONNECTION: USINT = 0x57;
-// Ref: ODVA CIP Vol. 1, Connection Manager Object services - Get_Connection_Owner / Close
-// service code 0x58 (section unverified; Go names it CloseConnection).
-pub const SERVICE_CLOSE_CONNECTION: USINT = 0x58;
+// Ref: ODVA CIP Vol. 1, Connection Manager Object services - Get_Connection_Owner is 0x5A
+// (section unverified). The Go-only "CloseConnection = 0x58" constant is not a defined
+// Connection Manager service and has been removed.
+pub const SERVICE_GET_CONNECTION_OWNER: USINT = 0x5A;
 
 // ---------------------------------------------------------------------------
 // Extended status codes
@@ -58,18 +59,21 @@ pub const EXT_STATUS_TRANSPORT_NOT_SUPP: UINT = 0x0103;
 // 0x0106: ownership conflict.
 pub const EXT_STATUS_OWNERSHIP_CONFLICT: UINT = 0x0106;
 // Ref: CIP Vol. 1, Connection Manager extended status codes (table number unverified).
-// 0x0107: target connection not found. NOTE the Go source uses 0x0109 for "connection not
-// found"; the value is kept as in Go.
-pub const EXT_STATUS_CONNECTION_NOT_FOUND: UINT = 0x0109;
+// 0x0107: target connection not found. (Go used 0x0109 for this, which is a Go bug; fixed.)
+pub const EXT_STATUS_CONNECTION_NOT_FOUND: UINT = 0x0107;
+// Ref: CIP Vol. 1, Connection Manager extended status codes (table number unverified).
+// 0x0109: invalid connection size.
+pub const EXT_STATUS_INVALID_CONNECTION_SIZE: UINT = 0x0109;
 // Ref: CIP Vol. 1, Connection Manager extended status codes (table number unverified).
 // Go value 0x0315 "invalid segment type in path".
 pub const EXT_STATUS_INVALID_SEGMENT_TYPE: UINT = 0x0315;
 // Ref: CIP Vol. 1, Connection Manager extended status codes (table number unverified).
-// Go value 0x0311 "invalid parameter".
-pub const EXT_STATUS_INVALID_PARAM: UINT = 0x0311;
+// 0x0311: invalid port ID specified in the route path (Go called it "invalid parameter").
+pub const EXT_STATUS_INVALID_PORT_ID: UINT = 0x0311;
 // Ref: CIP Vol. 1, Connection Manager extended status codes (table number unverified).
-// Go value 0x031C, vendor-defined error code.
-pub const EXT_STATUS_VENDOR_SPECIFIC_ERROR: UINT = 0x031C;
+// 0x031C: miscellaneous (Go called it "vendor specific"; vendor-specific extended status
+// is a separate range, exact bounds unverified).
+pub const EXT_STATUS_MISCELLANEOUS: UINT = 0x031C;
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -432,8 +436,11 @@ impl ConnectionManager {
             my_conn_id = st.next_conn_id;
 
             conn = Arc::new(Connection {
-                ot_connection_id: req.ot_connection_id,
-                to_connection_id: my_conn_id,
+                // Ref: CIP Vol. 1, Forward_Open reply (section unverified): the O->T
+                // connection ID is chosen by the target; the T->O ID is the one the
+                // originator proposed and is echoed back.
+                ot_connection_id: my_conn_id,
+                to_connection_id: req.to_connection_id,
                 connection_serial_number: req.connection_serial_number,
                 vendor_id: req.vendor_id,
                 originator_serial_number: req.originator_serial_number,
@@ -448,8 +455,8 @@ impl ConnectionManager {
 
         // The target echoes the requested RPIs as the actual packet intervals (as in Go).
         let resp = ForwardOpenResponse {
-            ot_connection_id: req.ot_connection_id,
-            to_connection_id: my_conn_id,
+            ot_connection_id: my_conn_id,
+            to_connection_id: req.to_connection_id,
             connection_serial_number: req.connection_serial_number,
             vendor_id: req.vendor_id,
             originator_serial_number: req.originator_serial_number,
@@ -477,7 +484,7 @@ impl ConnectionManager {
     // unverified).
     // Processes a Forward_Close request from its raw service data: finds the connection by
     // its triad, removes it, invokes the on-close callback and returns the serialized
-    // ForwardCloseResponse. As in Go, a triad that matches nothing is not an error.
+    // ForwardCloseResponse. A triad that matches nothing returns status 0x01 / ext 0x0107 (Go returned success).
     pub fn handle_forward_close(&self, req_data: &[u8]) -> Result<Vec<u8>> {
         let mut r = Rd::new(req_data);
         let mut req = ForwardCloseRequest::default();
@@ -506,7 +513,15 @@ impl ConnectionManager {
             key.and_then(|k| st.connections.remove(&k))
         };
 
-        if let (Some(c), Some(cb)) = (&closed, &self.on_close) {
+        // Ref: CIP Vol. 1, Forward_Close (section unverified): a triad that matches no
+        // connection is general status 0x01 with extended status 0x0107.
+        let Some(c) = &closed else {
+            return Err(CipError::Status(Error::with_ext(
+                STATUS_CONNECTION_FAILURE,
+                vec![EXT_STATUS_CONNECTION_NOT_FOUND],
+            )));
+        };
+        if let Some(cb) = &self.on_close {
             cb(c);
         }
 
