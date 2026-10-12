@@ -59,13 +59,15 @@ where
     F: Fn() -> Box<dyn TypeCodec> + Send + Sync + 'static,
 {
     let base = dt.base();
+    // Run user code (factory, display_name) before taking the lock so that re-entrant calls
+    // into the registry from those callbacks cannot deadlock.
+    let probe = factory();
+    let name = probe.display_name().unwrap_or_default();
+    drop(probe);
     let mut reg = registry().write().unwrap_or_else(|e| e.into_inner());
     if reg.contains_key(&base.0) {
         panic!("cip: duplicate RegisterType for DataType 0x{:04X}", base.0);
     }
-    // Probe the factory once to extract a display name.
-    let probe = factory();
-    let name = probe.display_name().unwrap_or_default();
     reg.insert(base.0, TypeEntry { factory: Box::new(factory), name });
 }
 
@@ -118,7 +120,9 @@ mod tests {
         let mut c = lookup_type(DataType(0x2F83 | 0x8000)).expect("registered");
         c.unmarshal_cip(&[0x34, 0x12]).unwrap();
         assert_eq!(c.marshal_cip().unwrap(), vec![0x34, 0x12]);
-        assert_eq!(DataType(0x2F83).to_string(), "Sample");
+        // 0x2F83 carries one array dimension (bits 13-14); 0x8F83 is the plain struct form.
+        assert_eq!(DataType(0x8F83).to_string(), "Sample");
+        assert_eq!(DataType(0x2F83).to_string(), "Sample[]");
         assert_eq!(DataType(0xAF83).to_string(), "Sample[]");
         assert!(lookup_type(DataType(0x2F84)).is_none());
         assert_eq!(crate::cip::encode::go_type_to_cip_type(&Sample::default()).unwrap(), DataType(0x2F83));

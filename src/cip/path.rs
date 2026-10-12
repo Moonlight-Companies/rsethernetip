@@ -157,22 +157,41 @@ impl Path {
     // unverified); Rockwell 1756-PM020 Logix 5000 Data Access uses it to address tags by name.
     // The segment is padded to a 16-bit word boundary.
     //
-    // Note (Go behavior retained): the length byte is `len as u8`, so symbols longer than 255
-    // bytes encode a truncated length.
-    pub fn add_symbolic_segment(&mut self, symbol: &str) {
-        self.0.push(0x91); // Extended Symbol Segment (Data Segment 0x80 | 0x11)
+    // Deviation from Go: a symbol longer than 255 bytes (one-byte length field) is rejected
+    // instead of silently truncating the length; the path is left unchanged on error.
+    pub fn add_symbolic_segment(&mut self, symbol: &str) -> Result<()> {
         let l = symbol.len();
+        if l > 0xFF {
+            return Err(CipError::Other(format!(
+                "cip: symbolic segment of {} bytes exceeds 255",
+                l
+            )));
+        }
+        self.0.push(0x91); // Extended Symbol Segment (Data Segment 0x80 | 0x11)
         self.0.push(l as u8);
         self.0.extend_from_slice(symbol.as_bytes());
         if l % 2 != 0 {
             self.0.push(0x00); // Pad to even length
         }
+        Ok(())
     }
 
     // Ref: CIP Vol. 1, Appendix C Port Segment (port identifier + link address; extended port
     // number and extended link address size forms; section unverified). Used to route CIP
     // messages through a backplane or network port to a downstream device.
-    pub fn add_port_segment(&mut self, port: UINT, link_address: &[u8]) {
+    // Field order: [segment byte][link address size (if extended)][extended port UINT (if port
+    // nibble is 0x0F)][link address][pad].
+    //
+    // Deviation from Go: the Go order wrote the port before the link-address size, and a link
+    // address over 255 bytes was truncated; the order is fixed and oversize addresses rejected
+    // (path unchanged on error).
+    pub fn add_port_segment(&mut self, port: UINT, link_address: &[u8]) -> Result<()> {
+        if link_address.len() > 0xFF {
+            return Err(CipError::Other(format!(
+                "cip: port link address of {} bytes exceeds 255",
+                link_address.len()
+            )));
+        }
         let seg_start = self.0.len();
 
         let mut b: u8;
@@ -189,14 +208,14 @@ impl Path {
 
         self.0.push(b);
 
+        if link_address.len() > 1 {
+            // Write link address length byte (precedes the extended port number)
+            self.0.push(link_address.len() as u8);
+        }
+
         if port >= 15 {
             // Write the actual port number as a uint16
             self.0.extend_from_slice(&port.to_le_bytes());
-        }
-
-        if link_address.len() > 1 {
-            // Write link address length byte
-            self.0.push(link_address.len() as u8);
         }
 
         self.0.extend_from_slice(link_address);
@@ -205,6 +224,7 @@ impl Path {
         if (self.0.len() - seg_start) % 2 != 0 {
             self.0.push(0x00);
         }
+        Ok(())
     }
 
     // Returns the raw encoded path bytes.
@@ -224,9 +244,20 @@ impl Path {
     }
 
     // Ref: CIP Vol. 1, Message Router request format - Request_Path_Size is in 16-bit words
-    // (section unverified). Returns the path length in 16-bit words (truncated to a byte).
+    // (section unverified). Returns the path length in 16-bit words (truncated to a byte);
+    // use `try_len_words` to reject paths over 510 bytes.
     pub fn len_words(&self) -> u8 {
         ((self.0.len() + 1) / 2) as u8
+    }
+
+    // Ref: CIP Vol. 1, Message Router request format - Request_Path_Size is a USINT count of
+    // 16-bit words (section unverified). Errors if the path exceeds 255 words (510 bytes).
+    // Deviation from Go, which truncated silently.
+    pub fn try_len_words(&self) -> Result<u8> {
+        let w = (self.0.len() + 1) / 2;
+        u8::try_from(w).map_err(|_| {
+            CipError::Other(format!("cip: path of {} bytes exceeds 510 bytes", self.0.len()))
+        })
     }
 }
 
@@ -388,14 +419,14 @@ mod tests {
     #[test]
     fn path_build_symbolic_even_length() {
         let mut p = Path::new();
-        p.add_symbolic_segment("Test");
+        p.add_symbolic_segment("Test").unwrap();
         assert_eq!(p.bytes(), &[0x91, 0x04, b'T', b'e', b's', b't']);
     }
 
     #[test]
     fn path_build_symbolic_odd_pad() {
         let mut p = Path::new();
-        p.add_symbolic_segment("Tag");
+        p.add_symbolic_segment("Tag").unwrap();
         assert_eq!(p.bytes(), &[0x91, 0x03, b'T', b'a', b'g', 0x00]);
     }
 
@@ -403,16 +434,38 @@ mod tests {
     #[test]
     fn path_build_port_segment_simple() {
         let mut p = Path::new();
-        p.add_port_segment(1, &[0x00]); // Port 1, link address 0
+        p.add_port_segment(1, &[0x00]).unwrap(); // Port 1, link address 0
         assert_eq!(p.bytes(), &[0x01, 0x00]);
+    }
+
+    // Ref: CIP Vol. 1, Appendix C port segment, extended port + extended link address
+    // (section unverified): size byte precedes the port UINT.
+    #[test]
+    fn path_build_port_segment_extended_port_and_link() {
+        let mut p = Path::new();
+        p.add_port_segment(0x0102, &[0xAA, 0xBB, 0xCC]).unwrap();
+        assert_eq!(p.bytes(), &[0x1F, 0x03, 0x02, 0x01, 0xAA, 0xBB, 0xCC, 0x00]);
+    }
+
+    #[test]
+    fn path_length_limits() {
+        let mut p = Path::new();
+        assert!(p.add_symbolic_segment(&"a".repeat(256)).is_err());
+        assert!(p.add_port_segment(1, &[0u8; 256]).is_err());
+        assert!(p.is_empty());
+        p.add_symbolic_segment(&"a".repeat(255)).unwrap();
+        assert!(p.try_len_words().is_ok());
+        let big = Path(vec![0u8; 512]);
+        assert!(big.try_len_words().is_err());
     }
 
     #[test]
     fn path_build_port_segment_extended() {
         let mut p = Path::new();
-        p.add_port_segment(15, &[0x01]); // Extended port number
+        p.add_port_segment(15, &[0x01]).unwrap(); // Extended port number
         // Port >= 15: uses 0x0F with extended port bytes
         assert!(p.bytes().len() >= 4, "extended port segment too short: {} bytes", p.bytes().len());
+        assert_eq!(p.bytes(), &[0x0F, 0x0F, 0x00, 0x01]);
         // First byte should have port nibble = 0x0F
         assert_eq!(p.bytes()[0] & 0x0F, 0x0F);
     }
@@ -512,11 +565,11 @@ mod tests {
     #[test]
     fn path_symbolic_segments() {
         let mut p = Path::new();
-        p.add_symbolic_segment("abc123");
+        p.add_symbolic_segment("abc123").unwrap();
         assert_eq!(p.bytes(), &[0x91, 0x06, b'a', b'b', b'c', b'1', b'2', b'3']);
 
         let mut p = Path::new();
-        p.add_symbolic_segment("xyz12");
+        p.add_symbolic_segment("xyz12").unwrap();
         assert_eq!(p.bytes(), &[0x91, 0x05, b'x', b'y', b'z', b'1', b'2', 0x00]);
     }
 
@@ -533,7 +586,7 @@ mod tests {
     #[test]
     fn path_port_segment_basic() {
         let mut p = Path::new();
-        p.add_port_segment(1, &[0x00]);
+        p.add_port_segment(1, &[0x00]).unwrap();
         assert_eq!(p.bytes(), &[0x01, 0x00]);
     }
 
@@ -550,8 +603,8 @@ mod tests {
 
         // cpppo extpath_4: 8 words (16 bytes for two symbolic segments)
         let mut p = Path::new();
-        p.add_symbolic_segment("abc123");
-        p.add_symbolic_segment("xyz12");
+        p.add_symbolic_segment("abc123").unwrap();
+        p.add_symbolic_segment("xyz12").unwrap();
         assert_eq!(p.len_words(), 8);
     }
 

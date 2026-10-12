@@ -141,21 +141,21 @@ pub const CLASS_PARAMETER: UINT = 0x0F;
 pub const CLASS_PARAMETER_GROUP: UINT = 0x10;
 // Ref: ODVA CIP Vol. 1, Object Library - Group Object, class code 0x12 (section unverified).
 pub const CLASS_GROUP: UINT = 0x12;
-// Ref: ODVA CIP Vol. 1, Object Library - Discrete Input Point Object, class code 0x1D (section unverified).
-pub const CLASS_DISCRETE_INPUT: UINT = 0x1D;
-// Ref: ODVA CIP Vol. 1, Object Library - Discrete Output Point Object, class code 0x1E (section unverified).
-pub const CLASS_DISCRETE_OUTPUT: UINT = 0x1E;
-// Ref: ODVA CIP Vol. 1, Object Library - Analog Input Point Object, class code 0x1F (section unverified).
-pub const CLASS_ANALOG_INPUT: UINT = 0x1F;
-// Ref: ODVA CIP Vol. 1, Object Library - Analog Output Point Object, class code 0x20 (section unverified).
-pub const CLASS_ANALOG_OUTPUT: UINT = 0x20;
+// Ref: ODVA CIP Vol. 1, Object Library - Discrete Input Point Object, class code 0x08 (section unverified). Deviation from Go, which used 0x1D.
+pub const CLASS_DISCRETE_INPUT: UINT = 0x08;
+// Ref: ODVA CIP Vol. 1, Object Library - Discrete Output Point Object, class code 0x09 (section unverified). Deviation from Go, which used 0x1E.
+pub const CLASS_DISCRETE_OUTPUT: UINT = 0x09;
+// Ref: ODVA CIP Vol. 1, Object Library - Analog Input Point Object, class code 0x0A (section unverified). Deviation from Go, which used 0x1F.
+pub const CLASS_ANALOG_INPUT: UINT = 0x0A;
+// Ref: ODVA CIP Vol. 1, Object Library - Analog Output Point Object, class code 0x0B (section unverified). Deviation from Go, which used 0x20.
+pub const CLASS_ANALOG_OUTPUT: UINT = 0x0B;
 // Ref: ODVA CIP Vol. 1, Object Library - Position Sensor Object, class code 0x23 (section unverified).
 pub const CLASS_POSITION_SENSOR: UINT = 0x23;
-// Ref: ODVA CIP Vol. 1, Object Library - Position Controller Object, class code 0x24 (section unverified).
-pub const CLASS_POSITION_CTRL: UINT = 0x24;
+// Ref: ODVA CIP Vol. 1, Object Library - Position Controller Object, class code 0x25 (section unverified). Deviation from Go, which used 0x24 (Position Controller Supervisor).
+pub const CLASS_POSITION_CTRL: UINT = 0x25;
 // Ref: ODVA CIP Vol. 1, Object Library - AC/DC Drive Object, class code 0x2A (section unverified).
 pub const CLASS_AC_DRIVE: UINT = 0x2A;
-// Ref: ODVA CIP Vol. 1, Object Library - Motor Data / Overload Object, class code 0x2C (section unverified).
+// Ref: ODVA CIP Vol. 1, Object Library - Overload Object, class code 0x2C (section unverified); Motor Data is class 0x28.
 pub const CLASS_MOTOR_OVERLOAD: UINT = 0x2C;
 // Ref: ODVA CIP Vol. 5 (CIP on ControlNet) - ControlNet Object, class code 0xF0 (section unverified).
 pub const CLASS_CONTROL_NET: UINT = 0xF0;
@@ -177,9 +177,13 @@ pub const CLASS_PCCC: UINT = 0x67;
 // ---------------------------------------------------------------------------
 
 // Ref: ODVA CIP Vol. 1, Appendix C "Data Management" - data type reporting / elementary data
-// type codes (section unverified); bit 15 as array flag is the Rockwell Logix tag-type
-// convention (Rockwell 1756-PM020 Logix 5000 Data Access).
-// DataType is a CIP data type code (16-bit). Bit 15 is the array flag.
+// type codes (section unverified). NOTE: treating bit 15 (0x8000) as an "array flag" is a
+// convention inherited from the Go library, NOT the Rockwell Symbol Object layout. In the
+// Symbol Object type word (Rockwell 1756-PM020 Logix 5000 Data Access, attribute 2, section
+// unverified) bit 15 marks a structure/UDT and bits 13-14 give the array dimension count.
+// It is kept here because the custom-type registry uses codes (e.g. 0x2F83) that overlap the
+// dimension bits.
+// DataType is a CIP data type code (16-bit). By library convention bit 15 is the array flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct DataType(pub u16);
 
@@ -270,26 +274,24 @@ pub const STATUS_PATH_SEGMENT_ERROR: USINT = 0x04;
 pub const STATUS_CONNECTION_FAILURE: USINT = 0x01;
 // Ref: CIP Vol. 1, Appendix B General Status Codes: 0x02 Resource unavailable.
 pub const STATUS_RESOURCE_UNAVAILABLE: USINT = 0x02;
-// Ref: CIP Vol. 1, Appendix B General Status Codes (section unverified). The Go source names 0x03
-// "InvalidSegmentType" ("or 0x04 depending on context"); the spec lists 0x03 as "Invalid
-// parameter value" - value retained from the Go source.
-pub const STATUS_INVALID_SEGMENT_TYPE: USINT = 0x03;
+// Ref: CIP Vol. 1, Appendix B General Status Codes: 0x03 Invalid parameter value (section
+// unverified). The Go source called this "InvalidSegmentType".
+pub const STATUS_INVALID_PARAMETER_VALUE: USINT = 0x03;
 // Ref: CIP Vol. 1, Appendix B General Status Codes: 0x08 Service not supported.
 pub const STATUS_SERVICE_NOT_SUPPORTED: USINT = 0x08;
 // Ref: CIP Vol. 1, Appendix B General Status Codes: 0x09 Invalid attribute value.
 pub const STATUS_INVALID_ATTRIBUTE_VALUE: USINT = 0x09;
 // Ref: CIP Vol. 1, Appendix B General Status Codes: 0x0E Attribute not settable.
 pub const STATUS_ATTRIBUTE_NOT_SETTABLE: USINT = 0x0E;
-// Ref: CIP Vol. 1, Appendix B General Status Codes (section unverified). Value taken from the Go
-// source (0x10); note the published table lists Privilege violation as 0x0F and 0x10 as Device
-// state conflict (possible off-by-one in the original Go constants block).
-pub const STATUS_PRIVILEGE_VIOLATION: USINT = 0x10;
-// Ref: CIP Vol. 1, Appendix B General Status Codes (section unverified). Value from the Go
-// source (0x11); the published table lists Device state conflict as 0x10.
-pub const STATUS_DEVICE_STATE_CONFLICT: USINT = 0x11;
-// Ref: CIP Vol. 1, Appendix B General Status Codes (section unverified). Value from the Go
-// source (0x12); the published table lists Reply data too large as 0x11.
-pub const STATUS_REPLY_DATA_TOO_LARGE: USINT = 0x12;
+// Ref: CIP Vol. 1, Appendix B General Status Codes: 0x0F Privilege violation (permission denied).
+// Deviation from Go: the Go constants block used 0x10 here (off by one); corrected to the spec.
+pub const STATUS_PRIVILEGE_VIOLATION: USINT = 0x0F;
+// Ref: CIP Vol. 1, Appendix B General Status Codes: 0x10 Device state conflict.
+// Deviation from Go: Go used 0x11; corrected to the spec.
+pub const STATUS_DEVICE_STATE_CONFLICT: USINT = 0x10;
+// Ref: CIP Vol. 1, Appendix B General Status Codes: 0x11 Reply data too large.
+// Deviation from Go: Go used 0x12 (Fragmentation primitive error in the spec); corrected.
+pub const STATUS_REPLY_DATA_TOO_LARGE: USINT = 0x11;
 // Ref: CIP Vol. 1, Appendix B General Status Codes: 0x13 Not enough data.
 pub const STATUS_NOT_ENOUGH_DATA: USINT = 0x13;
 // Ref: CIP Vol. 1, Appendix B General Status Codes: 0x14 Attribute not supported.
@@ -298,9 +300,9 @@ pub const STATUS_ATTRIBUTE_NOT_SUPPORTED: USINT = 0x14;
 pub const STATUS_TOO_MUCH_DATA: USINT = 0x15;
 // Ref: CIP Vol. 1, Appendix B General Status Codes: 0x16 Object does not exist.
 pub const STATUS_OBJECT_DOES_NOT_EXIST: USINT = 0x16;
-// Ref: CIP Vol. 1, Appendix B General Status Codes (section unverified); Go source name
-// ServiceFragmentation, value 0x2D.
-pub const STATUS_SERVICE_FRAGMENTATION: USINT = 0x2D;
+// Ref: CIP Vol. 1, Appendix B General Status Codes: 0x17 Service fragmentation sequence not in
+// progress (section unverified). Go used 0x2D, which is not a defined general status.
+pub const STATUS_SERVICE_FRAGMENTATION: USINT = 0x17;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -401,17 +403,37 @@ pub type Result<T> = std::result::Result<T, CipError>;
 // ---------------------------------------------------------------------------
 
 impl DataType {
-    // Ref: Rockwell 1756-PM020 Logix 5000 Data Access - bit 15 (0x8000) of the tag type is the
-    // array flag (section unverified).
-    // Returns true if the array bit (bit 15, 0x8000) is set.
-    pub fn is_array(self) -> bool {
+    // Ref: Rockwell 1756-PM020 Logix 5000 Data Access, Symbol Object Type attribute (section
+    // unverified). Bit 15 (0x8000) of the symbol type word marks a structure; the low 12 bits are
+    // then the template instance ID.
+    pub fn is_struct(self) -> bool {
         (self.0 & 0x8000) != 0
     }
 
-    // Ref: Rockwell 1756-PM020 Logix 5000 Data Access - bit 15 is the array flag (section
-    // unverified). Returns the base type code with the array flag masked off.
+    // Ref: Rockwell 1756-PM020 Logix 5000 Data Access, Symbol Object Type attribute (section
+    // unverified). Bits 13-14 hold the array dimension count (0..=3).
+    pub fn array_dims(self) -> u8 {
+        ((self.0 >> 13) & 0x3) as u8
+    }
+
+    // Ref: Rockwell 1756-PM020 Logix 5000 Data Access, Symbol Object Type attribute (section
+    // unverified). True if at least one array dimension is encoded (bits 13-14 non-zero).
+    // Deviation from Go, which treated bit 15 as the array flag.
+    pub fn is_array(self) -> bool {
+        self.array_dims() != 0
+    }
+
+    // Ref: Rockwell 1756-PM020 Logix 5000 Data Access, Symbol Object Type attribute (section
+    // unverified). Low 12 bits: atomic type code or structure template instance ID.
+    pub fn template_instance(self) -> u16 {
+        self.0 & 0x0FFF
+    }
+
+    // Ref: Rockwell 1756-PM020 Logix 5000 Data Access, Symbol Object Type attribute (section
+    // unverified). Returns the type code with the structure flag and array dimension bits
+    // cleared (the system bit 12 and low 12 bits are kept). Used as the registry key.
     pub fn base(self) -> DataType {
-        DataType(self.0 & 0x7FFF)
+        DataType(self.0 & 0x1FFF)
     }
 }
 
@@ -461,7 +483,9 @@ fn type_name(dt: DataType) -> Option<&'static str> {
 impl fmt::Display for DataType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let base = self.base();
-        let name: String = match type_name(base) {
+        // Structure-flagged codes name a template, never an atomic type.
+        let atomic = if self.is_struct() { None } else { type_name(base) };
+        let name: String = match atomic {
             Some(n) => n.to_string(),
             None => crate::cip::registry::lookup_type_name(base),
         };
@@ -493,7 +517,7 @@ mod tests {
             (TYPE_REAL, "REAL"),
             (TYPE_STRING, "STRING"),
             (TYPE_STRUCT, "STRUCT"),
-            (DataType(0x80C4), "DINT[]"), // Array bit set
+            (DataType(0x20C4), "DINT[]"), // Array dimension bits set
             (DataType(0x00FF), "UNKNOWN(0x00FF)"),
         ];
         for (dt, want) in tests {
@@ -501,13 +525,27 @@ mod tests {
         }
     }
 
-    // Ref: Go TestDataTypeIsArray - Rockwell 1756-PM020 array flag (bit 15).
+    // Ref: Go TestDataTypeIsArray - Rockwell 1756-PM020 symbol type word (array dims in bits
+    // 13-14, structure flag bit 15; section unverified). Deviation from Go (bit 15 as array).
     #[test]
     fn data_type_is_array() {
         assert!(!TYPE_DINT.is_array(), "TypeDINT should not be array");
-        let arr = DataType(0x80C4);
-        assert!(arr.is_array(), "0x80C4 should be array");
+        let arr = DataType(0x20C4);
+        assert!(arr.is_array(), "0x20C4 should be array");
         assert_eq!(arr.base(), TYPE_DINT);
+        assert_eq!(DataType(0x6000 | 0xC4).array_dims(), 3);
+        let st = DataType(0x8123);
+        assert!(st.is_struct() && !st.is_array());
+        assert_eq!(st.template_instance(), 0x0123);
+        assert_eq!(st.to_string(), "UNKNOWN(0x8123)");
+    }
+
+    // Ref: CIP Vol. 1, Appendix B General Status Codes (0x0F, 0x10, 0x11).
+    #[test]
+    fn status_code_values() {
+        assert_eq!(STATUS_PRIVILEGE_VIOLATION, 0x0F);
+        assert_eq!(STATUS_DEVICE_STATE_CONFLICT, 0x10);
+        assert_eq!(STATUS_REPLY_DATA_TOO_LARGE, 0x11);
     }
 
     // Ref: Go TestStatusCodesExist - CIP Vol. 1, Appendix B General Status Codes.

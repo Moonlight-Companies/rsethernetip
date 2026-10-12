@@ -22,7 +22,7 @@ impl MessageRouterRequest {
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut buf = Vec::with_capacity(2 + self.request_path.len() + self.request_data.len());
         buf.push(self.service);
-        buf.push(self.request_path.len_words());
+        buf.push(self.request_path.try_len_words()?);
         buf.extend_from_slice(self.request_path.bytes());
         if !self.request_data.is_empty() {
             buf.extend_from_slice(&self.request_data);

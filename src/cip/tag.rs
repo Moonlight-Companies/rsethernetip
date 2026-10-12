@@ -58,7 +58,7 @@ pub fn parse_tag_path(tag: &str) -> Result<Path> {
                     }
                 }
             } else {
-                p.add_symbolic_segment(name);
+                p.add_symbolic_segment(name)?;
             }
         }
         for idx in indices {
