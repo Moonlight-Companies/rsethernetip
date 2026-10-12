@@ -35,12 +35,12 @@ impl FileType {
     // Ref: PCCC/DF1 manual 1770-6.5.16, file type 0x8A (F, float).
     /// F, 32-bit IEEE float.
     pub const FLOAT: FileType = FileType(0x8A);
-    // Ref: PCCC/DF1 manual 1770-6.5.16, file type 0x8B (O, output).
+    // Ref: Allen-Bradley PCCC/DF1 manual 1770-6.5.16, file-type code table (O = 0x82; codes from memory, section unverified).
     /// O, output image.
-    pub const OUTPUT: FileType = FileType(0x8B);
-    // Ref: PCCC/DF1 manual 1770-6.5.16, file type 0x8C (I, input).
+    pub const OUTPUT: FileType = FileType(0x82);
+    // Ref: Allen-Bradley PCCC/DF1 manual 1770-6.5.16, file-type code table (I = 0x83; codes from memory, section unverified).
     /// I, input image.
-    pub const INPUT: FileType = FileType(0x8C);
+    pub const INPUT: FileType = FileType(0x83);
     // Ref: PCCC/DF1 manual 1770-6.5.16, file type 0x8D (ST, string).
     /// ST, string.
     pub const STRING: FileType = FileType(0x8D);
@@ -198,7 +198,8 @@ pub fn encode_typed_read(
 }
 
 // Ref: PCCC/DF1 manual 1770-6.5.16, Protected Typed Logical Write with 3
-// Address Fields (FNC 0xAA): CMD STS TNS(LE) FNC File Type Elem SubElem Data.
+// Address Fields (FNC 0xAA): CMD STS TNS(LE) FNC ByteSize File Type Elem SubElem Data
+// (same layout as FNC 0xA2; typed-logical layout only, section unverified).
 /// Encodes a PROTECTED TYPED LOGICAL WRITE (FNC 0xAA) command. `data` is the
 /// raw payload; the caller ensures its length matches the addressed element(s).
 pub fn encode_typed_write(
@@ -219,13 +220,14 @@ pub fn encode_typed_write(
         return Err(PcccError::msg(format!("pccc: write data too large ({} bytes)", data.len())));
     }
     let t = tns.to_le_bytes();
-    let mut buf = Vec::with_capacity(9 + data.len());
+    let mut buf = Vec::with_capacity(10 + data.len());
     buf.extend_from_slice(&[
         CMD_PROTECTED_TYPED_LOGICAL,
         0x00,
         t[0],
         t[1],
         FUNC_PROTECTED_TYPED_LOGICAL_WRITE,
+        data.len() as u8, // byte size (data.len() <= 240 checked above)
         file_num as u8,
         ft.0,
         elem as u8,
@@ -235,19 +237,21 @@ pub fn encode_typed_write(
     Ok(buf)
 }
 
-// Ref: PCCC/DF1 manual 1770-6.5.16, address fields are single bytes (0..255).
+// Ref: PCCC/DF1 manual 1770-6.5.16, 3-address-field logical addressing (section
+// unverified): a single-byte field value of 0xFF introduces a 2-byte LE value, so
+// this encoder only emits single-byte values 0..=254 (the 0xFF escape is not implemented).
 fn validate_address(file_num: i64, elem: i64, sub_elem: i64, ft: FileType) -> Result<()> {
     if ft.letter().is_empty() {
         return Err(PcccError::msg(format!("pccc: unknown file type 0x{:02X}", ft.0)));
     }
-    if !(0..=255).contains(&file_num) {
-        return Err(PcccError::msg(format!("pccc: file number {file_num} out of range [0,255]")));
+    if !(0..=254).contains(&file_num) {
+        return Err(PcccError::msg(format!("pccc: file number {file_num} out of range [0,254]")));
     }
-    if !(0..=255).contains(&elem) {
-        return Err(PcccError::msg(format!("pccc: element {elem} out of range [0,255]")));
+    if !(0..=254).contains(&elem) {
+        return Err(PcccError::msg(format!("pccc: element {elem} out of range [0,254]")));
     }
-    if !(0..=255).contains(&sub_elem) {
-        return Err(PcccError::msg(format!("pccc: sub-element {sub_elem} out of range [0,255]")));
+    if !(0..=254).contains(&sub_elem) {
+        return Err(PcccError::msg(format!("pccc: sub-element {sub_elem} out of range [0,254]")));
     }
     Ok(())
 }
@@ -380,8 +384,8 @@ mod tests {
             (FileType::CONTROL, 0x88),
             (FileType::INTEGER, 0x89),
             (FileType::FLOAT, 0x8A),
-            (FileType::OUTPUT, 0x8B),
-            (FileType::INPUT, 0x8C),
+            (FileType::OUTPUT, 0x82),
+            (FileType::INPUT, 0x83),
             (FileType::STRING, 0x8D),
             (FileType::ASCII, 0x8E),
             (FileType::BCD, 0x8F),
@@ -481,7 +485,7 @@ mod tests {
     #[test]
     fn encode_typed_write_n7() {
         let got = encode_typed_write(0x0001, 7, FileType::INTEGER, 0, 0, &[0x2A, 0x00]).unwrap();
-        assert_eq!(got, [0x0F, 0x00, 0x01, 0x00, 0xAA, 0x07, 0x89, 0x00, 0x00, 0x2A, 0x00]);
+        assert_eq!(got, [0x0F, 0x00, 0x01, 0x00, 0xAA, 0x02, 0x07, 0x89, 0x00, 0x00, 0x2A, 0x00]);
     }
 
     #[test]

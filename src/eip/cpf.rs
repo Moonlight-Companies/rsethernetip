@@ -44,6 +44,16 @@ impl CpfItem {
     // Ref: CIP Vol. 2, Section 2-6 CPF item layout, little-endian.
     /// Writes type ID, length, and data (data only when `length > 0`, as in Go).
     pub fn encode<W: Write>(&self, w: &mut W) -> Result<()> {
+        // Implementation detail (not spec): refuse to emit a frame whose declared length does
+        // not match the payload (Go silently truncated the length, corrupting the frame).
+        if self.data.len() != self.length as usize {
+            return Err(Error::Cpf(format!(
+                "cpf: item length {} does not match data length {} (max {})",
+                self.length,
+                self.data.len(),
+                u16::MAX
+            )));
+        }
         w.write_all(&self.type_id.to_le_bytes())?;
         w.write_all(&self.length.to_le_bytes())?;
         if self.length > 0 {
@@ -70,6 +80,14 @@ impl CommonPacketFormat {
     // Ref: CIP Vol. 2, Section 2-6 Common Packet Format layout.
     /// Serializes the item count followed by each item.
     pub fn encode(&self) -> Result<Vec<u8>> {
+        if self.items.len() > u16::MAX as usize || self.items.len() != self.item_count as usize {
+            return Err(Error::Cpf(format!(
+                "cpf: item count {} does not match {} items (max {})",
+                self.item_count,
+                self.items.len(),
+                u16::MAX
+            )));
+        }
         let mut buf = Vec::new();
         buf.extend_from_slice(&self.item_count.to_le_bytes());
         for item in &self.items {

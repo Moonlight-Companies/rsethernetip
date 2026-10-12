@@ -619,7 +619,7 @@ mod tests {
             priority_time_tick: 0x0A,
             timeout_ticks: 0xF0,
             ot_connection_id: 0x1234,
-            to_connection_id: 0,
+            to_connection_id: 0x5678,
             connection_serial_number: serial,
             vendor_id: vendor,
             originator_serial_number: orig_sn,
@@ -671,8 +671,9 @@ mod tests {
         let data = build_open_request(0x0001, 0x0042, 0xABCD, conn_path());
         let resp = cm.handle_forward_open(&data).unwrap();
 
-        assert_eq!(u32_at(&resp, 0), 0x1234, "OTConnectionID");
-        assert_ne!(u32_at(&resp, 4), 0, "TOConnectionID should not be 0");
+        // O->T ID is allocated by the target; T->O ID is echoed from the request.
+        assert_eq!(u32_at(&resp, 0), 0x8000_0001, "OTConnectionID");
+        assert_eq!(u32_at(&resp, 4), 0x5678, "TOConnectionID");
         assert_eq!(u16_at(&resp, 8), 0x0001);
         assert_eq!(u16_at(&resp, 10), 0x0042);
         assert_eq!(u32_at(&resp, 12), 0xABCD);
@@ -680,7 +681,6 @@ mod tests {
         assert_eq!(u32_at(&resp, 16), 10000);
         assert_eq!(u32_at(&resp, 20), 10000);
         assert_eq!(resp.len(), 26);
-        assert_eq!(u32_at(&resp, 4), 0x8000_0001);
     }
 
     #[test]
@@ -782,6 +782,20 @@ mod tests {
         let close = build_close_request(0x0001, 0x0042, 0xAAAA, conn_path());
         cm.handle_forward_close(&close).unwrap();
         cm.handle_forward_open(&data).expect("re-open after close");
+    }
+
+    // Forward_Close of an unknown triad: general status 0x01, extended status 0x0107.
+    #[test]
+    fn forward_close_unknown_triad_fails() {
+        let cm = ConnectionManager::new();
+        let close = build_close_request(9, 9, 9, conn_path());
+        match cm.handle_forward_close(&close).unwrap_err() {
+            CipError::Status(e) => {
+                assert_eq!(e.status, STATUS_CONNECTION_FAILURE);
+                assert_eq!(e.ext_status, vec![EXT_STATUS_CONNECTION_NOT_FOUND]);
+            }
+            other => panic!("expected cip.Error, got {:?}", other),
+        }
     }
 
     #[test]

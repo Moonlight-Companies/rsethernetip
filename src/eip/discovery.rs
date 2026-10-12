@@ -1,6 +1,6 @@
 use super::cpf::ITEM_ID_LIST_IDENTITY;
 use super::wire;
-use super::Result;
+use super::{Error, Result};
 
 // Ref: CIP Vol. 2, ListIdentity response "CIP Identity Item" (type 0x000C) (section unverified):
 // Encapsulation Protocol Version, Socket Address (sockaddr_in), Vendor ID, Device Type,
@@ -41,6 +41,9 @@ pub struct ListServicesItem {
 // Ref: CIP Vol. 2, ListIdentity reply: item count (UINT) followed by CIP Identity items.
 /// Encodes identity items into a ListIdentity response body.
 pub fn encode_list_identity_response(items: &[ListIdentityItem]) -> Result<Vec<u8>> {
+    if items.len() > u16::MAX as usize {
+        return Err(Error::Cpf(format!("discovery: too many items ({})", items.len())));
+    }
     let mut buf = Vec::new();
     buf.extend_from_slice(&(items.len() as u16).to_le_bytes());
     for item in items {
@@ -69,6 +72,9 @@ pub fn encode_list_identity_response(items: &[ListIdentityItem]) -> Result<Vec<u
 // Ref: CIP Vol. 2, ListServices reply: item count (UINT) followed by service items.
 /// Encodes service items into a ListServices response body.
 pub fn encode_list_services_response(items: &[ListServicesItem]) -> Result<Vec<u8>> {
+    if items.len() > u16::MAX as usize {
+        return Err(Error::Cpf(format!("discovery: too many items ({})", items.len())));
+    }
     let mut buf = Vec::new();
     buf.extend_from_slice(&(items.len() as u16).to_le_bytes());
     for item in items {
