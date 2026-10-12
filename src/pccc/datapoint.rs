@@ -53,22 +53,17 @@ impl File {
         parse_address(&self.address)
             .map_err(|e| PcccError::msg(format!("pccc: {}: {}", self.string(), e)))
     }
-
-    // Implementation detail (not spec): Rust has no downcast on `dyn
-    // DataPoint` (plc::DataPoint has no `as_any`), so the client recovers a
-    // File from its `describe()` text, which this inverts.
-    pub(crate) fn from_description(s: &str) -> Option<File> {
-        let inner = s.strip_prefix("File(")?.strip_suffix(')')?;
-        if let Some((addr, cnt)) = inner.split_once(", count=") {
-            return Some(File { address: addr.to_string(), count: cnt.parse().ok()? });
-        }
-        Some(File { address: inner.to_string(), count: 0 })
-    }
 }
 
 impl DataPoint for File {
     fn describe(&self) -> String {
         self.string()
+    }
+
+    // Implementation detail (not spec): lets the client recover a File from
+    // an `Arc<dyn DataPoint>` (Go type assertion `dp.(File)`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -94,7 +89,6 @@ mod tests {
         for (f, want) in tests {
             assert_eq!(f.string(), want);
             assert_eq!(f.describe(), want);
-            assert_eq!(File::from_description(want).unwrap().address, f.address);
         }
     }
 

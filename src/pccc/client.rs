@@ -269,9 +269,9 @@ fn to_plc(e: PcccError) -> plc::Error {
 }
 
 // Implementation detail (not spec): recovers a File from a DataPoint (Go type
-// assertion `dp.(File)`); see File::from_description.
+// assertion `dp.(File)`) via DataPoint::as_any.
 fn as_file(dp: &dyn DataPoint) -> Result<File> {
-    File::from_description(&dp.describe()).ok_or_else(|| {
+    dp.as_any().and_then(|a| a.downcast_ref::<File>()).cloned().ok_or_else(|| {
         PcccError::msg(format!("pccc: expected File DataPoint, got {}", dp.describe()))
     })
 }
