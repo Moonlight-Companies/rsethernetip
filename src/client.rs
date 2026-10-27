@@ -488,6 +488,8 @@ impl Client {
     // observe `ctx`.
     pub(crate) fn do_op<T>(&self, ctx: &Context, mut op: impl FnMut(&Arc<Session>) -> Result<T>) -> Result<T> {
         let mut i: i32 = 0;
+        // Deviation from Go: the final error carries the last cause instead of only a count.
+        let mut last_err: Option<String> = None;
         while self.retries < 0 || i <= self.retries {
             let sess = match self.transport.conn(ctx) {
                 Ok(s) => s,
@@ -495,6 +497,7 @@ impl Client {
                     if self.retries == 0 {
                         return Err(err);
                     }
+                    last_err = Some(err.to_string());
                     self.logger.warn(format_args!("Session unavailable (attempt {}): {}", i.wrapping_add(1), err));
                     if self.retries < 0 || i < self.retries {
                         self.sleep_retry(ctx)?;
@@ -517,6 +520,7 @@ impl Client {
             // Transport error: reset and retry.
             let _ = self.transport.reset(&sess);
             self.logger.warn(format_args!("Operation failed (attempt {}): {}", i.wrapping_add(1), err));
+            last_err = Some(err.to_string());
 
             if self.retries < 0 || i < self.retries {
                 self.sleep_retry(ctx)?;
@@ -529,7 +533,11 @@ impl Client {
             i = i.wrapping_add(1);
         }
 
-        Err(Error::msg(format!("operation failed after {} retries", self.retries as i64 + 1)))
+        let attempts = self.retries as i64 + 1;
+        Err(Error::msg(match last_err {
+            Some(cause) => format!("operation failed after {attempts} attempts: {cause}"),
+            None => format!("operation failed after {attempts} attempts"),
+        }))
     }
 
     // Implementation detail: sleeps `retry_delay` in slices, returning the context error if `ctx`
@@ -863,6 +871,19 @@ mod tests {
         assert_eq!(t.requests.load(Ordering::SeqCst) - before, 1);
     }
 
+
+    #[test]
+    fn exhausted_retries_report_the_last_cause() {
+        // Nothing listens on port 1, so every dial is refused.
+        let c = new_reconnecting_client(
+            "127.0.0.1:1",
+            vec![with_retries(1).into(), with_retry_delay(Duration::from_millis(1)).into()],
+        );
+        let err = c.read_tag(&ctx(), "T").unwrap_err().to_string();
+        assert!(err.contains("after 2 attempts"), "{err}");
+        assert!(err.to_lowercase().contains("refused") || err.contains("127.0.0.1"), "cause missing: {err}");
+    }
+
     #[test]
     fn plc_trait_lifecycle() {
         let (_t, client) = connect_pair(symbolic_router(vec![0xC1, 0, 1]));
@@ -1113,7 +1134,7 @@ mod tests {
         );
         assert!(!c.is_connected(), "constructor must not dial");
         let e = c.read_tag(&ctx(), "T").unwrap_err();
-        assert_eq!(e.to_string(), "operation failed after 3 retries");
+        assert!(e.to_string().starts_with("operation failed after 3 attempts: "), "{e}");
         assert!(t.accepted.load(Ordering::SeqCst) >= 3, "should have reconnected per attempt");
 
         // Heal the target: next call reconnects and succeeds.
@@ -1124,14 +1145,15 @@ mod tests {
         c.close().unwrap();
     }
 
-    // Go quirk: retries == 0 and an operation failure reports "operation failed after 1 retries".
+    // Go quirk: retries == 0 and an operation failure reports "operation failed after 1 attempts"
+    // (with the cause appended here; Go reported only the count).
     #[test]
     fn no_retries_operation_failure_message() {
         let t = FakeTarget::start(symbolic_router(vec![0xC1, 0, 0]));
         t.drop_after.store(1, Ordering::SeqCst);
         let c = new_reconnecting_client(&t.addr, vec![]);
         let e = c.read_tag(&ctx(), "T").unwrap_err();
-        assert_eq!(e.to_string(), "operation failed after 1 retries");
+        assert!(e.to_string().starts_with("operation failed after 1 attempts"), "{e}");
     }
 
     #[test]
